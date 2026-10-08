@@ -1,0 +1,5 @@
+OutcomeOS — Final English Submission Candidate
+
+Read docs/ENGLISH_SUBMISSION_KIT/00_START_HERE.md first.
+The English form responses, Panta track description, 2-minute pitch, 3-minute demo, deck, access guide and reviewer FAQ are in docs/ENGLISH_SUBMISSION_KIT/.
+No live deployment or portal submission is implied. Revoke any exposed API key and use a new secret locally.

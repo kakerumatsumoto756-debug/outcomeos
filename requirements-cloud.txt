@@ -1,0 +1,2 @@
+# Cloud deployment only; local SQLite mode uses Python's standard library.
+psycopg[binary]>=3.2,<4

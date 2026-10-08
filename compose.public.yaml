@@ -1,0 +1,61 @@
+# OutcomeOS public jury preview — requires a domain name and a secure Panta key.
+# Do not expose the stdlib app directly to the internet; Caddy terminates HTTPS.
+services:
+  outcomeos:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OUTCOMEOS_HOST: 0.0.0.0
+      PORT: 8766
+      OUTCOMEOS_COOKIE_SECURE: '1'
+      OUTCOMEOS_SEED_EXAMPLES: '0'
+      OUTCOMEOS_DB: /app/data/outcomeos.sqlite3
+    expose:
+      - '8766'
+    volumes:
+      - outcomeos_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ['CMD','python','-c','from urllib.request import urlopen; urlopen("http://127.0.0.1:8766/api/health",timeout=3).read()']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?Set SITE_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      outcomeos:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+  panta-sync:
+    build: .
+    profiles: ['live-sync']
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OUTCOMEOS_DB: /app/data/outcomeos.sqlite3
+    command: ['python','-m','app.sync','--loop','--interval','900']
+    volumes:
+      - outcomeos_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  outcomeos_data:
+  caddy_data:
+  caddy_config:

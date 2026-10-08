@@ -1,0 +1,15 @@
+.env
+.env.local
+.env.production
+*.sqlite*
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+.DS_Store
+
+# Any new local secret file stays private
+.env.*
+!.env.example
+*.pem
+*.key

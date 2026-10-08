@@ -1,0 +1,33 @@
+services:
+  outcomeos:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OUTCOMEOS_HOST: 0.0.0.0
+      PORT: 8766
+      OUTCOMEOS_DB: /app/data/outcomeos.sqlite3
+    ports:
+      - "127.0.0.1:8766:8766"
+    volumes:
+      - outcomeos_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+  panta-sync:
+    build: .
+    profiles: ["live-sync"]
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OUTCOMEOS_DB: /app/data/outcomeos.sqlite3
+    command: ["python", "-m", "app.sync", "--loop", "--interval", "900"]
+    volumes:
+      - outcomeos_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  outcomeos_data:

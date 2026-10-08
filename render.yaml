@@ -1,0 +1,21 @@
+# Single free Web Service. Database is Neon PostgreSQL, not ephemeral SQLite.
+# Secrets must be set only through the Render dashboard during deployment.
+services:
+  - type: web
+    name: outcomeos-panta
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: OUTCOMEOS_HOST
+        value: 0.0.0.0
+      - key: OUTCOMEOS_COOKIE_SECURE
+        value: "1"
+      - key: OUTCOMEOS_SEED_EXAMPLES
+        value: "0"
+      - key: OUTCOMEOS_REQUIRE_POSTGRES
+        value: "1"
+      - key: DATABASE_URL
+        sync: false
+      - key: PANTA_API_KEY
+        sync: false
