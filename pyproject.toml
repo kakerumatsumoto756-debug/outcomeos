@@ -7,3 +7,6 @@ license = "MIT"
 
 [tool.ruff]
 line-length = 110
+
+[tool.vercel]
+entrypoint = "main:app"
