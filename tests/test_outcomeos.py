@@ -132,6 +132,45 @@ class TestHttp(unittest.TestCase):
         self.assertAlmostEqual(self.req(f'/api/workspaces/{ws}')[1]['metrics']['brier'],.09)
         self.assertEqual(self.req(f'/api/workspaces/{ws}/export')[0],200)
         self.assertEqual(self.req(f'/api/workspaces/{ws}/csv')[0],200)
+    def test_created_decision_visible_with_fresh_session_and_open_status(self):
+        # Critical regression: creating a decision and auditing it must be
+        # followed by an authoritative workspace listing, including after GET /auth/me.
+        with patch.dict(os.environ,{'OUTCOMEOS_SEED_EXAMPLES':'0'}):
+            ws=self.register('fresh@example.com')
+        code,created=self.req(f'/api/workspaces/{ws}/decisions','POST',{
+            'title':'E2E QA — BTC year-end 2026',
+            'question':'Will a verifiable BTC outcome occur by December 31?',
+            'description':'QA fixture; no real funds or market prices.',
+            'deadline':'2026-12-31',
+            'category':'QA'})
+        self.assertEqual(code,201,created)
+        self.assertEqual(created['workspace_id'],ws)
+        self.assertEqual(created['status'],'open')
+        code,workspace=self.req(f'/api/workspaces/{ws}')
+        self.assertEqual(code,200)
+        self.assertEqual(workspace['metrics']['open'],1)
+        self.assertEqual(len(workspace['decisions']),1)
+        self.assertEqual(workspace['decisions'][0]['id'],created['id'])
+        self.assertEqual(workspace['decisions'][0]['status'],'open')
+        diagnostic=self.req(f'/api/workspaces/{ws}/diagnostics')[1]
+        self.assertEqual(diagnostic['workspace_id'],ws)
+        self.assertEqual(diagnostic['open_decisions'],1)
+        self.assertEqual(diagnostic['audit_create_events'],1)
+        self.assertEqual(self.req('/api/auth/me')[1]['user']['email'],'fresh@example.com')
+        self.assertEqual(self.req(f'/api/workspaces/{ws}')[1]['decisions'][0]['id'],created['id'])
+        code,activity=self.req(f'/api/workspaces/{ws}/activity')
+        self.assertEqual(code,200)
+        self.assertTrue(any(a['event']=='decision_created' for a in activity['activity']))
+
+    def test_missing_panta_title_or_quotes_are_not_fabricated(self):
+        id='11111111111111111111111111111111'
+        market=panta.clean_market({'marketId':id,'title':'  ', 'yesPrice':None,'noPrice':None, 'phase':'secondary'})
+        self.assertEqual(market['title'], 'Untitled Panta market (11111111…)')
+        self.assertFalse(market['titleAvailable'])
+        self.assertFalse(market['quoteAvailable'])
+        self.assertIsNone(market['yesPrice'])
+        self.assertIsNone(market['noPrice'])
+
     def test_mocked_live_panta_link_and_quote_refresh(self):
         ws=self.register('live@example.com')
         did=self.req(f'/api/workspaces/{ws}/decisions','POST',{'title':'Launch metric','question':'Will goal be hit by Dec 1?','impact_usd':2000})[1]['id']

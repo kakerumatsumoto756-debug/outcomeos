@@ -10,13 +10,70 @@ const dt=x=>x?new Date(x).toLocaleDateString('en-US',{month:'short',day:'numeric
 const dateTime=x=>x?new Date(x).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
 const pill=(status)=>{const cl=status==='open'?'':status==='resolved'?'blue':status==='demo'?'demo':status==='archived'?'gray':'gray';return `<span class="pill ${cl}">${esc(status)}</span>`;};
 const blank=(title,txt)=>`<div class="empty"><span class="glyph">◈</span><strong>${esc(title)}</strong>${esc(txt)}</div>`;
-const api=async(path,method='GET',data=null)=>{const headers={};if(method!=='GET'){headers['Content-Type']='application/json';headers['X-CSRF-Token']=S.csrf;}const r=await fetch(path,{method,headers,credentials:'same-origin',body:data==null?null:JSON.stringify(data)});let output;try{output=await r.json()}catch{throw new Error('Server returned an unexpected response')};if(!r.ok)throw new Error(output.error||'Request failed');return output;};
+// Call only same-origin API paths. Failures are classified so an HTTP 401 is not
+// confused with a browser/network error. Never print credentials or response bodies.
+const api=async(path,method='GET',data=null)=>{
+ if(!path.startsWith('/api/'))throw new Error('Invalid API path');
+ const headers={};
+ if(method!=='GET'){headers['Content-Type']='application/json';headers['X-CSRF-Token']=S.csrf;}
+ const controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),30000);
+ let r;
+ try{
+  r=await fetch(path,{method,headers,credentials:'same-origin',cache:'no-store',signal:controller.signal,body:data==null?null:JSON.stringify(data)});
+ }catch(error){
+  if(error?.name==='AbortError')throw new Error('The server did not respond within 30 seconds. Please retry.');
+  throw new Error('Cannot reach the OutcomeOS server. Check your connection and try again.');
+ }finally{clearTimeout(timeout);}
+ if(r.status===0)throw new Error('Browser blocked the server request. Open the Production URL and check browser privacy settings.');
+ let output;
+ try{output=await r.json()}catch{throw new Error(`Unexpected server response (HTTP ${r.status}). Please retry later.`);}
+ if(!r.ok){
+  const error=new Error(`${output?.error||'Server request failed'} (HTTP ${r.status})`);
+  error.httpStatus=r.status;
+  throw error;
+ }
+ return output;
+};
+// Retry safe reads only. Never re-send a creation/forecast POST after an uncertain failure.
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function readApi(path,attempts=3){
+ for(let n=1;;n++){
+  try{return await api(path)}catch(error){
+   if(n>=attempts || (error.httpStatus && ![429,502,503,504].includes(error.httpStatus)))throw error;
+   await pause(400*n);
+  }
+ }
+}
+function showConnectivityError(message){
+ const root=$('#app');
+ if(!root)return;
+ root.innerHTML=`<div class="connectivity-wrap" role="alert"><div class="connectivity-card">${brand()}<h1>Temporarily unable to reach OutcomeOS</h1><p>${esc(message)}</p><p>Your account has not been signed out. This may be a temporary hosting or database connection issue.</p><button class="btn btn-primary" data-act="auth-retry">Retry connection</button><p class="subnote">If retries fail, check the Vercel function logs for /api/auth/me and /api/workspaces.</p></div></div>`;
+}
+
 function toast(message,error=false){const node=$('#toast-root');if(!node)return;node.innerHTML=`<div class="toast ${error?'error':''}">${esc(message)}</div>`;setTimeout(()=>{node.innerHTML=''},4200)}
 const loading=(message='Loading workspace…')=>{const root=$('#content');if(root)root.innerHTML=blank(message,'One moment please.')};
-async function refreshAuth(){const a=await api('/api/auth/me');S.user=a.user;S.csrf=a.csrf||'';S.panta=!!a.panta_configured;if(S.user){const w=await api('/api/workspaces');S.workspaces=w.workspaces;if(!S.ws||!S.workspaces.some(x=>x.id===S.ws))S.ws=S.workspaces[0]?.id||null;await loadOverview();}render()}
-async function loadOverview(){if(!S.ws)return;S.overview=await api('/api/workspaces/'+S.ws)}
+// Commit a complete auth snapshot atomically. If a later workspace API call
+// fails, keep the previous UI state rather than leaving a half-signed-in view.
+async function refreshAuth(){
+ const a=await readApi('/api/auth/me');
+ if(!a.user){S.user=null;S.csrf='';S.ws=null;S.workspaces=[];S.overview=null;S.panta=!!a.panta_configured;render();return a;}
+ const w=await readApi('/api/workspaces');
+ const workspaces=w.workspaces||[];
+ const workspace=(S.ws&&workspaces.some(x=>x.id===S.ws))?S.ws:(workspaces[0]?.id||null);
+ const overview=workspace?await readApi('/api/workspaces/'+workspace):null;
+ S.user=a.user;S.csrf=a.csrf||'';S.panta=!!a.panta_configured;
+ S.workspaces=workspaces;S.ws=workspace;S.overview=overview;
+ render();return a;
+}
+function showAuthError(message){
+ const field=$('#auth-error');
+ if(field){field.textContent=message;field.hidden=false;}
+ else toast(message,true);
+}
+async function loadOverview(){if(!S.ws)return;const o=await readApi('/api/workspaces/'+S.ws);if(!Array.isArray(o.decisions))throw new Error('Server returned an invalid decision list.');S.overview=o;return o;}
 function brand(){return `<div class="brand"><span class="brand-icon">◈</span><span>outcome<b>OS</b></span></div>`}
-function authPage(){return `<div class="auth-wrap"><aside class="auth-visual">${brand()}<div><div class="eyebrow">DON'T JUST PREDICT THE FUTURE.</div><h2>Make decisions<br>worth getting<br><span style="color:var(--lime)">right.</span></h2><p>Transform uncertainty into clarity. Link prediction markets, gather your team's convictions, track evidence, and learn from every outcome.</p><svg viewBox="0 0 560 220" class="hero-graph" aria-hidden="true"><defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#78e6a6" stop-opacity=".24"/><stop offset="1" stop-color="#78e6a6" stop-opacity="0"/></linearGradient></defs><path d="M0 190L65 172 95 179 157 133 214 145 263 104 321 111 386 77 436 92 495 35 560 19V220H0Z" fill="url(#a)"/><path d="M0 190L65 172 95 179 157 133 214 145 263 104 321 111 386 77 436 92 495 35 560 19" fill="none" stroke="#aaf6c2" stroke-width="3"/><circle cx="495" cy="35" r="7" fill="#b6f7bc"/></svg></div><small style="color:#8db4a8">POWERED BY THE WISDOM OF MARKETS + PEOPLE</small></aside><main class="auth-panel"><form id="auth-form" class="auth-form"><div class="eyebrow">WELCOME TO OUTCOMEOS</div><h1>${S.authMode==='register'?'Build a clearer future.':'Welcome back.'}</h1><p style="margin-bottom:30px">${S.authMode==='register'?'Create your decision intelligence workspace.':'Sign in to your team’s decision workspace.'}</p>${S.authMode==='register'?`<div class="field"><label class="form-label" for="display_name">Your name</label><input class="input" id="display_name" name="display_name" required maxlength="60" autocomplete="name" placeholder="Alex Rivera"></div>`:''}<div class="field"><label class="form-label" for="email">Work email</label><input class="input" id="email" type="email" name="email" required autocomplete="email" placeholder="you@company.com"></div><div class="field"><label class="form-label" for="password">Password</label><input class="input" id="password" name="password" type="password" minlength="${S.authMode==='register'?10:1}" required autocomplete="${S.authMode==='register'?'new-password':'current-password'}" placeholder="At least 10 characters"></div><button class="btn btn-primary" style="width:100%;margin-top:11px;padding:14px" type="submit">${S.authMode==='register'?'Create my workspace →':'Sign in →'}</button><div class="auth-switch">${S.authMode==='register'?'Already have an account?':'New to OutcomeOS?'} <button type="button" data-act="auth-switch">${S.authMode==='register'?'Sign in':'Create account'}</button></div><p class="subnote" style="margin-top:32px">New cloud workspaces start empty. Local examples, if enabled, are clearly marked synthetic. No wallet or trades required.</p></form></main></div>`}
+function authPage(){return `<div class="auth-wrap"><aside class="auth-visual">${brand()}<div><div class="eyebrow">DON'T JUST PREDICT THE FUTURE.</div><h2>Make decisions<br>worth getting<br><span style="color:var(--lime)">right.</span></h2><p>Transform uncertainty into clarity. Link prediction markets, gather your team's convictions, track evidence, and learn from every outcome.</p><svg viewBox="0 0 560 220" class="hero-graph" aria-hidden="true"><defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#78e6a6" stop-opacity=".24"/><stop offset="1" stop-color="#78e6a6" stop-opacity="0"/></linearGradient></defs><path d="M0 190L65 172 95 179 157 133 214 145 263 104 321 111 386 77 436 92 495 35 560 19V220H0Z" fill="url(#a)"/><path d="M0 190L65 172 95 179 157 133 214 145 263 104 321 111 386 77 436 92 495 35 560 19" fill="none" stroke="#aaf6c2" stroke-width="3"/><circle cx="495" cy="35" r="7" fill="#b6f7bc"/></svg></div><small style="color:#8db4a8">POWERED BY THE WISDOM OF MARKETS + PEOPLE</small></aside><main class="auth-panel"><form id="auth-form" class="auth-form"><div class="eyebrow">WELCOME TO OUTCOMEOS</div><h1>${S.authMode==='register'?'Build a clearer future.':'Welcome back.'}</h1><p style="margin-bottom:30px">${S.authMode==='register'?'Create your decision intelligence workspace.':'Sign in to your team’s decision workspace.'}</p>${S.authMode==='register'?`<div class="field"><label class="form-label" for="display_name">Your name</label><input class="input" id="display_name" name="display_name" required maxlength="60" autocomplete="name" placeholder="Alex Rivera"></div>`:''}<div class="field"><label class="form-label" for="email">Work email</label><input class="input" id="email" type="email" name="email" required autocomplete="email" placeholder="you@company.com"></div><div class="field"><label class="form-label" for="password">Password</label><input class="input" id="password" name="password" type="password" minlength="${S.authMode==='register'?10:1}" required autocomplete="${S.authMode==='register'?'new-password':'current-password'}" placeholder="At least 10 characters"></div><button class="btn btn-primary" style="width:100%;margin-top:11px;padding:14px" type="submit">${S.authMode==='register'?'Create my workspace →':'Sign in →'}</button><p class="auth-error" id="auth-error" role="alert" hidden></p><button class="auth-retry" type="button" data-act="auth-retry">Retry server connection</button><div class="auth-switch">${S.authMode==='register'?'Already have an account?':'New to OutcomeOS?'} <button type="button" data-act="auth-switch">${S.authMode==='register'?'Sign in':'Create account'}</button></div><p class="subnote" style="margin-top:32px">New cloud workspaces start empty. Local examples, if enabled, are clearly marked synthetic. No wallet or trades required.</p></form></main></div>`}
 function sidebar(){const links=[['dashboard','◫','Overview'],['decisions','◎','Decision rooms'],['markets','◇','Market intelligence'],['alerts','⚑','Signal alerts'],['lab','◈','Scenario lab'],['team','♧','Team & activity']];return `<aside class="sidebar">${brand()}<button class="workspace-switch" data-act="change-workspace"><span><small>WORKSPACE</small><strong>${esc(S.overview?.workspace?.name||'Choose workspace')}</strong></span><span>⌄</span></button><div class="sidebar-label">WORKSPACE</div><nav class="nav">${links.map(([key,icon,label])=>`<button data-view="${key}" class="${S.view===key?'active':''}"><span class="miniicon">${icon}</span><span>${label}</span></button>`).join('')}</nav><div class="side-foot"><div class="side-user"><div class="user-initials">${esc((S.user?.display_name||'U').slice(0,1).toUpperCase())}</div><div><b>${esc(S.user?.display_name)}</b><small>${esc(S.user?.email)}</small></div></div><button data-act="logout">↪ Sign out</button></div></aside>`}
 function chrome(){return `<div class="layout">${sidebar()}<main class="main"><header class="topbar"><div class="crumb">WORKSPACE &nbsp; / &nbsp; <b>${esc(({dashboard:'Overview',decisions:'Decisions',markets:'Market intelligence',alerts:'Signal alerts',lab:'Scenario lab',team:'Team & activity',detail:'Decision room'})[S.view]||'Overview')}</b></div><div class="top-actions"><span class="live-dot" aria-hidden="true"></span><span class="pill ${S.panta?'':'demo'}">${S.panta?'Panta key configured':'Panta key not configured'}</span><button class="btn btn-mini" data-act="new-decision">+ New decision</button></div></header><div class="content" id="content"></div></main></div>`}
 function footer(){return `<div class="footnote">OutcomeOS · Decision intelligence, not trading advice. Panta quotes are market prices, not calibrated probabilities. <a target="_blank" rel="noopener" href="https://docs.panta.market/">Powered by Panta</a></div>`}
@@ -56,6 +113,7 @@ async function openDecision(id){S.detail=await api('/api/decisions/'+id);await n
 async function reload(){await loadOverview();if(S.view==='detail'&&S.detail)S.detail=await api('/api/decisions/'+S.detail.id);render()}
 async function doAction(node){const act=node.dataset.act;const id=node.dataset.id;try{
  if(act==='auth-switch'){S.authMode=S.authMode==='login'?'register':'login';render()}
+ else if(act==='auth-retry'){try{const session=await refreshAuth();if(!session.user)showAuthError('No active session. Please sign in.');}catch(e){if($('#auth-error'))showAuthError(e.message);else showConnectivityError(e.message)}}
  else if(act==='logout'){await api('/api/auth/logout','POST',{});S.user=null;S.csrf='';S.ws=null;render()}
  else if(act==='new-decision')decisionModal(false);
  else if(act==='edit-decision')decisionModal(true);
@@ -72,8 +130,8 @@ async function doAction(node){const act=node.dataset.act;const id=node.dataset.i
  else if(act==='market-mode'){S.marketSource=node.dataset.source;S.marketData=S.marketSource==='demo'?await api('/api/markets/demo'):null;S.marketCursor='';S.marketCategory='';if(S.marketSource==='live'&&S.panta){try{S.marketCategories=(await api('/api/markets/categories')).categories}catch(e){toast('Could not load market categories: '+e.message,true)}}render()}
  else if(act==='fetch-markets'){S.marketCategory=$('#market-category').value;S.marketPhase=$('#market-phase').value;S.marketData=await api(`/api/markets?category=${encodeURIComponent(S.marketCategory)}&phase=${encodeURIComponent(S.marketPhase)}`);render();toast('Live catalog loaded from Panta')}
  else if(act==='more-markets'){const p=await api(`/api/markets?category=${encodeURIComponent(S.marketCategory||'')}&phase=${encodeURIComponent(S.marketPhase||'')}&cursor=${encodeURIComponent(S.marketData.nextCursor)}`);S.marketData={items:[...S.marketData.items,...p.items],nextCursor:p.nextCursor};render()}
- else if(act==='market-detail'){let m=S.marketData.items.find(m=>m.marketId===id);if(S.marketSource==='live')m=await api('/api/markets/'+encodeURIComponent(id));modal('Market details',`<h3>${esc(m.title)}</h3><div class="meta">${pill(m.source)}${pill(m.phase)}</div><p class="subnote">${esc(m.description)}</p><div class="cards-2" style="margin:20px 0"><div class="stat"><small>YES quote</small><strong>${pct(m.yesPrice)}</strong></div><div class="stat"><small>NO quote</small><strong>${pct(m.noPrice)}</strong></div></div><p class="subnote">Market ID: ${esc(m.marketId)}</p><div class="callout info">Prices are not guaranteed to be calibrated event probabilities. Please review market resolution rules before making decisions.</div><button class="btn" data-act="close-modal">Close</button>`)}
- else if(act==='link-selected'){const m=S.marketData.items.find(m=>m.marketId===id);if(!m)return;S.linkMarketCandidate=m;const decisions=S.overview.decisions.filter(d=>d.status==='open');if(!decisions.length){toast('Create an open decision first',true);return}modal('Choose decision room',`<form id="choose-link-form"><div class="field"><label class="form-label">Attach ${esc(m.title)} to:</label><select name="decision_id" class="select">${decisions.map(d=>`<option value="${d.id}">${esc(d.title)}</option>`).join('')}</select></div>${foot('Continue')}</form>`)}
+ else if(act==='market-detail'){let m=S.marketData.items.find(m=>m.marketId===id);if(S.marketSource==='live')m=await api('/api/markets/'+encodeURIComponent(id));modal('Market details',`<h3>${esc(m.title)}</h3><div class="meta">${pill(m.source)}${pill(m.phase)}</div><p class="subnote">${esc(m.description)}</p><div class="cards-2" style="margin:20px 0"><div class="stat"><small>YES quote</small><strong>${pct(m.yesPrice)}</strong></div><div class="stat"><small>NO quote</small><strong>${pct(m.noPrice)}</strong></div></div>${m.yesPrice==null&&m.noPrice==null?'<div class="callout info" role="status">Panta returned no YES/NO prices for this market detail. A dash means unavailable, not 0% and not an API authentication failure.</div>':''}${m.titleAvailable===false?'<p class="subnote">Panta did not provide a market title. The displayed identifier is a fallback, not an official title.</p>':''}<p class="subnote">Market ID: ${esc(m.marketId)}</p><div class="callout info">Prices are not guaranteed to be calibrated event probabilities. Please review market resolution rules before making decisions.</div><button class="btn" data-act="close-modal">Close</button>`)}
+ else if(act==='link-selected'){const m=S.marketData.items.find(m=>m.marketId===id);if(!m)return;S.linkMarketCandidate=m;await loadOverview();const decisions=S.overview.decisions.filter(d=>d.status==='open');if(!decisions.length){toast('No open decisions are listed for this workspace. Check Decision rooms, then retry.',true);return}modal('Choose decision room',`<form id="choose-link-form"><div class="field"><label class="form-label">Attach ${esc(m.title)} to:</label><select name="decision_id" class="select">${decisions.map(d=>`<option value="${d.id}">${esc(d.title)}</option>`).join('')}</select></div>${foot('Continue')}</form>`)}
  else if(act==='link-market'){S.linkMarketCandidate=null;linkModal()}
  else if(act==='refresh-link'){const outcome=await api('/api/links/'+id+'/refresh','POST',{});await reload();toast(outcome.snapshot_result==='updated'?'New Panta quote snapshot recorded':outcome.snapshot_result==='unchanged'?'Quote unchanged — no duplicate snapshot':'No valid YES quote available; snapshot skipped')}
  else if(act==='remove-link'){if(!confirm('Unlink this market and its stored snapshots?'))return;await api('/api/links/'+id,'DELETE');await reload();toast('Market unlinked')}
@@ -86,8 +144,42 @@ async function doAction(node){const act=node.dataset.act;const id=node.dataset.i
  else if(act==='accept-invite'){const token=new URLSearchParams(location.search).get('invite');if(!token)return;const r=await api('/api/invites/accept','POST',{token});history.replaceState({},'',location.pathname);S.ws=r.workspace_id;S.workspaces=(await api('/api/workspaces')).workspaces;await loadOverview();S.view='dashboard';render();toast('Joined the workspace')}
  }catch(e){toast(e.message,true)}}
 async function submitForm(form){const f=Object.fromEntries(new FormData(form));try{
- if(form.id==='auth-form'){const data=await api('/api/auth/'+(S.authMode==='register'?'register':'login'),'POST',f);S.csrf=data.csrf;await refreshAuth();toast('Welcome to OutcomeOS');return}
- if(form.id==='decision-form'){if(S.view==='detail')await api('/api/decisions/'+S.detail.id,'PATCH',f);else await api('/api/workspaces/'+S.ws+'/decisions','POST',f);closeModal();await reload();toast('Decision saved')}
+ if(form.id==='auth-form'){
+  const button=form.querySelector('[type="submit"]');
+  const previousLabel=button?.textContent;
+  const field=$('#auth-error');if(field){field.hidden=true;field.textContent='';}
+  if(button){button.disabled=true;button.textContent='Connecting…';}
+  try{
+   const data=await api('/api/auth/'+(S.authMode==='register'?'register':'login'),'POST',f);
+   S.csrf=data.csrf||'';
+   const session=await refreshAuth();
+   if(!session.user){
+    throw new Error('Sign-in was accepted, but the session cookie was not retained. Try the Production URL in a regular browser.');
+   }
+   toast('Welcome to OutcomeOS');
+  }catch(error){showAuthError(error.message||'Unable to sign in. Please retry.');}
+  finally{if(button?.isConnected){button.disabled=false;button.textContent=previousLabel;}}
+  return;
+ }
+ if(form.id==='decision-form'){
+  const editing=S.view==='detail';
+  const created=editing?await api('/api/decisions/'+S.detail.id,'PATCH',f):await api('/api/workspaces/'+S.ws+'/decisions','POST',f);
+  closeModal();
+  let listed=false,refreshError=null;
+  for(let attempt=0;attempt<3;attempt++){
+   try{
+    await reload();
+    listed=editing || !!S.overview?.decisions?.some(d=>Number(d.id)===Number(created.id) && d.status==='open');
+    if(listed)break;
+   }catch(e){refreshError=e;}
+   if(attempt<2)await pause(450*(attempt+1));
+  }
+  if(!listed){
+   toast('Decision creation was accepted, but the updated list could not be confirmed. Do not create a duplicate. Reload Decision rooms; '+(refreshError?.message||'check the workspace and Vercel logs.'),true);
+   return;
+  }
+  toast('Decision saved and verified in this workspace');
+ }
  else if(form.id==='forecast-form'){await api('/api/decisions/'+S.detail.id+'/forecasts','POST',f);closeModal();await reload();toast('Forecast recorded')}
  else if(form.id==='note-form'){await api('/api/decisions/'+S.detail.id+'/notes','POST',f);closeModal();await reload();toast('Evidence saved')}
  else if(form.id==='resolve-form'){await api('/api/decisions/'+S.detail.id+'/resolve','POST',{outcome:f.outcome==='yes'});closeModal();await reload();toast('Decision resolved and calibration updated')}
@@ -100,4 +192,8 @@ document.addEventListener('click',e=>{const a=e.target.closest('[data-act]');con
 document.addEventListener('submit',e=>{if(e.target.matches('form')){e.preventDefault();submitForm(e.target)}});
 document.addEventListener('input',e=>{if(e.target.id==='forecast-n'){$('#forecast-value').textContent=e.target.value+'%'}if(e.target.id==='market-query'){S.marketSearch=e.target.value;const pos=e.target.selectionStart;$('#content').innerHTML=marketsView();const dest=$('#market-query');dest.focus();dest.setSelectionRange(pos,pos)}if(e.target.id==='decision-search'){S.search=e.target.value;const pos=e.target.selectionStart;const el=e.target;$('#content').innerHTML=decisionsView();let dest=$('#decision-search');dest.focus();dest.setSelectionRange(pos,pos)}});
 document.addEventListener('change',e=>{if(e.target.id==='lab-decision'){S.labDecisionId=+e.target.value;render()}if(e.target.id==='alert-threshold'){S.threshold=+e.target.value;navigate('alerts')}if(e.target.id==='link-suggestion'){const market=S.marketData.items.find(m=>m.marketId===e.target.value);if(market){$('#link-form [name="market_id"]').value=market.marketId;$('#link-form [name="source"]').value=market.source||S.marketSource}}});
-refreshAuth().then(()=>{const invite=new URLSearchParams(location.search).get('invite');if(invite&&S.user){modal('Join shared workspace',`<p class="subnote">You have been invited to collaborate on a decision workspace.</p><button class="btn btn-primary" data-act="accept-invite">Accept invitation →</button>`)}}).catch(e=>{console.error(e);$('#app').innerHTML=authPage();toast('Could not reach server: '+e.message,true)});
+refreshAuth().then(()=>{const invite=new URLSearchParams(location.search).get('invite');if(invite&&S.user){modal('Join shared workspace',`<p class="subnote">You have been invited to collaborate on a decision workspace.</p><button class="btn btn-primary" data-act="accept-invite">Accept invitation →</button>`)}}).catch(e=>{
+ console.error('[OutcomeOS] Initial session check failed:',e?.message||'unknown error');
+ // A temporary network error must not silently appear as a logged-out session.
+ showConnectivityError((e?.message||'Unable to connect to the server')+' Please retry when the server is available.');
+});

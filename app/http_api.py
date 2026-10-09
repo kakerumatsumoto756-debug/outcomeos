@@ -222,6 +222,16 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             ws=integer(match.group(1));action=match.group(2) or ''
             s.require_member(c,ws,user)
+            if method=='GET' and action=='diagnostics':
+                # Authenticated workspace-only consistency check. No credentials,
+                # member details, private notes, or full decision titles.
+                counts=c.execute('SELECT status,COUNT(*) AS total FROM decisions WHERE workspace_id=? GROUP BY status',(ws,)).fetchall()
+                statuses={r['status']:r['total'] for r in counts}
+                audit_count=c.execute('SELECT COUNT(*) AS n FROM audit WHERE workspace_id=? AND event=?',(ws,'decision_created')).fetchone()['n']
+                return 200,{'workspace_id':ws,'open_decisions':statuses.get('open',0),
+                    'decisions_by_status':statuses,'audit_create_events':audit_count,
+                    'recent_ids':[{'id':r['id'],'status':r['status']} for r in c.execute(
+                        'SELECT id,status FROM decisions WHERE workspace_id=? ORDER BY id DESC LIMIT 10',(ws,)).fetchall()]},None
             if method=='GET' and not action:return 200,s.overview(c,ws,user),None
             if method=='POST' and action=='invites':
                 s.require_owner(c,ws,user)
@@ -250,7 +260,7 @@ class Handler(BaseHTTPRequestHandler):
                 d=self.parse();deadline=field(d,'deadline',30,False) or None
                 if deadline and not re.fullmatch(r'\d{4}-\d{2}-\d{2}',deadline):raise RequestError(400,'Use YYYY-MM-DD for deadline')
                 did=s.create_decision(c,ws,user,field(d,'title',120),field(d,'question',350),field(d,'description',2500,False),field(d,'category',50,False) or 'Strategy',deadline,amount(d.get('impact_usd',0)))
-                return 201,{'id':did},None
+                return 201,{'id':did,'workspace_id':ws,'status':'open'},None
         # Owner-only share issuance/revocation. Share token displayed once and stored hashed.
         report_match=re.fullmatch(r'/api/decisions/(\d+)/report',path)
         if report_match:

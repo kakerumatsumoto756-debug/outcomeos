@@ -120,13 +120,15 @@ def clean_market(item: dict) -> dict:
         return str(value if value is not None else fallback)[:size]
     return {
         'marketId': item['marketId'],
-        'title': limited('title', 'Untitled market', 300),
+        'title': (limited('title', '', 300).strip() or ('Untitled Panta market (' + str(item['marketId'])[:8] + '…)')),
+        'titleAvailable': bool(str(item.get('title') or '').strip()),
         'category': limited('category', 'Other', 80),
         'phase': limited('phase', 'unknown', 40),
         'status': limited('status', 'unknown', 40),
         'volumeUsdc': volume(item.get('volumeUsdc')),
         'yesPrice': price(item.get('yesPrice')),
         'noPrice': price(item.get('noPrice')),
+        'quoteAvailable': price(item.get('yesPrice')) is not None or price(item.get('noPrice')) is not None,
         'description': limited('description', '', 1500),
         'source': 'live',
     }
