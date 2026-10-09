@@ -2,7 +2,7 @@
 const q=s=>document.querySelector(s);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pct=v=>v===null||v===undefined?'Not available':(100*Number(v)).toFixed(1)+'%';
-const date=v=>v?new Date(v).toLocaleString():'Not specified';
+const date=v=>v?new Date(typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?v+'T12:00:00':v).toLocaleString():'Not specified';
 function timeline(history){
  const pts=history.filter(x=>Number.isFinite(x.yes_price)&&x.yes_price>=0&&x.yes_price<=1);
  if(pts.length<2)return '<p class="report-meta">Not enough valid recorded quotes to show a trend.</p>';

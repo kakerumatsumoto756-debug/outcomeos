@@ -172,8 +172,11 @@ def overview(c,ws,user):
     dec=[dict(x) for x in c.execute('SELECT d.*,u.display_name AS creator FROM decisions d JOIN users u ON d.created_by=u.id WHERE workspace_id=? ORDER BY d.id DESC',(ws,)).fetchall()]
     for d in dec:
         d['team_probability']=latest_team_forecast(c,d['id'])
-        d['link_count']=c.execute('SELECT COUNT(*) FROM market_links WHERE decision_id=?',(d['id'],)).fetchone()[0]
-        d['forecast_count']=c.execute('SELECT COUNT(*) FROM forecasts WHERE decision_id=?',(d['id'],)).fetchone()[0]
+        # Query results must work with both sqlite3.Row and psycopg's dict_row.
+        # Numeric indexes (row[0]) raise KeyError(0) under PostgreSQL, which
+        # the HTTP layer otherwise misreports as a 404 error with message '0'.
+        d['link_count']=c.execute('SELECT COUNT(*) AS total FROM market_links WHERE decision_id=?',(d['id'],)).fetchone()['total']
+        d['forecast_count']=c.execute('SELECT COUNT(*) AS total FROM forecasts WHERE decision_id=?',(d['id'],)).fetchone()['total']
     members=[dict(x) for x in c.execute('SELECT u.id,u.display_name,u.email,m.role FROM memberships m JOIN users u ON m.user_id=u.id WHERE workspace_id=? ORDER BY m.role DESC,u.id',(ws,)).fetchall()]
     return {'workspace':rowdict(c.execute('SELECT * FROM workspaces WHERE id=?',(ws,)).fetchone()),'members':members,'decisions':dec,'metrics':{'total':len(dec),'open':sum(d['status']=='open' for d in dec),'resolved':sum(d['status']=='resolved' for d in dec),'markets':sum(d['link_count'] for d in dec),**score(c,ws)}}
 

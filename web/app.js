@@ -6,7 +6,7 @@ const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const num=x=>x==null?'—':Number(x).toLocaleString('en-US');
 const pct=x=>x==null?'—':(Number(x)*100).toFixed(0)+'%';
 const usd=x=>'$'+Number(x||0).toLocaleString('en-US',{maximumFractionDigits:0});
-const dt=x=>x?new Date(x).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'Unscheduled';
+const dt=x=>x?new Date(/^\d{4}-\d{2}-\d{2}$/.test(x)?x+'T12:00:00':x).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'Unscheduled';
 const dateTime=x=>x?new Date(x).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
 const pill=(status)=>{const cl=status==='open'?'':status==='resolved'?'blue':status==='demo'?'demo':status==='archived'?'gray':'gray';return `<span class="pill ${cl}">${esc(status)}</span>`;};
 const blank=(title,txt)=>`<div class="empty"><span class="glyph">◈</span><strong>${esc(title)}</strong>${esc(txt)}</div>`;
@@ -48,7 +48,7 @@ async function readApi(path,attempts=3){
 function showConnectivityError(message){
  const root=$('#app');
  if(!root)return;
- root.innerHTML=`<div class="connectivity-wrap" role="alert"><div class="connectivity-card">${brand()}<h1>Temporarily unable to reach OutcomeOS</h1><p>${esc(message)}</p><p>Your account has not been signed out. This may be a temporary hosting or database connection issue.</p><button class="btn btn-primary" data-act="auth-retry">Retry connection</button><p class="subnote">If retries fail, check the Vercel function logs for /api/auth/me and /api/workspaces.</p></div></div>`;
+ root.innerHTML=`<div class="connectivity-wrap" role="alert"><div class="connectivity-card">${brand()}<h1>Temporarily unable to reach OutcomeOS</h1><p>${esc(message)}</p><p>Your sign-in status could not be verified. This may be a temporary hosting or database connection issue.</p><button class="btn btn-primary" data-act="auth-retry">Retry connection</button><p class="subnote">If retries fail, check the Vercel function logs for /api/auth/me and /api/workspaces.</p></div></div>`;
 }
 
 function toast(message,error=false){const node=$('#toast-root');if(!node)return;node.innerHTML=`<div class="toast ${error?'error':''}">${esc(message)}</div>`;setTimeout(()=>{node.innerHTML=''},4200)}
@@ -139,7 +139,7 @@ async function doAction(node){const act=node.dataset.act;const id=node.dataset.i
  else if(act==='load-activity'){S.activity=(await api('/api/workspaces/'+S.ws+'/activity')).activity;render()}
  else if(act==='change-workspace'){modal('Switch workspace',`<form id="workspace-select"><div class="field"><select class="select" name="ws">${S.workspaces.map(w=>`<option value="${w.id}" ${S.ws===w.id?'selected':''}>${esc(w.name)} (${esc(w.role)})</option>`).join('')}</select></div>${foot('Switch workspace')}</form><button class="btn btn-mini" data-act="new-workspace">Create a new workspace</button>`)}
  else if(act==='new-workspace'){modal('New workspace',`<form id="workspace-form">${labelInput('Workspace name','name','Acme strategic decisions')}${foot('Create workspace')}</form>`)}
- else if(act==='invite'){const x=await api(`/api/workspaces/${S.ws}/invites`,'POST',{});const url=location.origin+'/?invite='+encodeURIComponent(x.token);modal('Invite teammate',`<p class="subnote">Share this link privately. It expires in 24 hours. The recipient must create an OutcomeOS account or sign in.</p><div class="field"><input class="input" aria-label="Invite link" readonly value="${esc(url)}" id="invite-url"></div><button class="btn btn-primary" data-act="copy-invite">Copy invite link</button>`)}
+ else if(act==='invite'){const x=await api(`/api/workspaces/${S.ws}/invites`,'POST',{});const url=location.origin+'/app?invite='+encodeURIComponent(x.token);modal('Invite teammate',`<p class="subnote">Share this link privately. It expires in 24 hours. The recipient must create an OutcomeOS account or sign in.</p><div class="field"><input class="input" aria-label="Invite link" readonly value="${esc(url)}" id="invite-url"></div><button class="btn btn-primary" data-act="copy-invite">Copy invite link</button>`)}
  else if(act==='copy-invite'){await navigator.clipboard.writeText($('#invite-url').value);toast('Invite link copied')}
  else if(act==='accept-invite'){const token=new URLSearchParams(location.search).get('invite');if(!token)return;const r=await api('/api/invites/accept','POST',{token});history.replaceState({},'',location.pathname);S.ws=r.workspace_id;S.workspaces=(await api('/api/workspaces')).workspaces;await loadOverview();S.view='dashboard';render();toast('Joined the workspace')}
  }catch(e){toast(e.message,true)}}
@@ -156,6 +156,8 @@ async function submitForm(form){const f=Object.fromEntries(new FormData(form));t
    if(!session.user){
     throw new Error('Sign-in was accepted, but the session cookie was not retained. Try the Production URL in a regular browser.');
    }
+   const inviteToken=new URLSearchParams(location.search).get('invite');
+   if(inviteToken){modal('Join shared workspace',`<p class="subnote">You have been invited to collaborate on a decision workspace.</p><button class="btn btn-primary" data-act="accept-invite">Accept invitation →</button>`);}
    toast('Welcome to OutcomeOS');
   }catch(error){showAuthError(error.message||'Unable to sign in. Please retry.');}
   finally{if(button?.isConnected){button.disabled=false;button.textContent=previousLabel;}}

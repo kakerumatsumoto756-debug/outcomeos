@@ -1,6 +1,6 @@
 """HTTP routing layer. Designed for localhost; see README before internet deployment."""
 from __future__ import annotations
-import base64, csv, hmac, io, json, os, re, secrets, sqlite3, threading, time
+import csv, datetime as dt, hmac, io, json, math, os, re, secrets, sqlite3, threading, time
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +41,24 @@ def amount(v):
     if not 0<=num<=1e12:raise RequestError(400,'Dollar impact out of range')
     return num
 
+def valid_deadline(value):
+    """Accept real ISO calendar dates, not syntactically plausible invalid dates."""
+    if not value:
+        return None
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+        raise RequestError(400, 'Use YYYY-MM-DD for deadline')
+    try:
+        dt.date.fromisoformat(value)
+    except ValueError:
+        raise RequestError(400, 'Deadline must be a valid calendar date') from None
+    return value
+
+def safe_csv_cell(value):
+    """Prevent user-controlled spreadsheet cells from being treated as formulas."""
+    if isinstance(value, str) and value.lstrip(' \t\r\n').startswith(('=', '+', '-', '@')):
+        return "'" + value
+    return value
+
 def integer(v):
     try:n=int(v)
     except (ValueError,TypeError):raise RequestError(400,'Invalid id')
@@ -55,7 +73,7 @@ def demo_markets():
     ]}
 
 class Handler(BaseHTTPRequestHandler):
-    server_version='OutcomeOS/1.3'
+    server_version='OutcomeOS/1.5'
     def log_message(self,format,*args):
         # Never log query tokens (invite/report), report-token URLs, headers or POST bodies.
         safe_path='/api/public/[redacted]' if self.path.startswith('/api/public/') else urlsplit(self.path).path
@@ -125,6 +143,13 @@ class Handler(BaseHTTPRequestHandler):
             else:raise RequestError(404,'Not found')
         except RequestError as e:self.json(e.status,{'error':e.message})
         except PermissionError as e:self.json(403,{'error':str(e)})
+        # KeyError is a programming/database row-mapping fault, not an HTTP 404.
+        # psycopg dict_row raises KeyError(0) for accidental numeric indexing;
+        # never disguise that server failure as {"error":"0"} (HTTP 404).
+        except KeyError:
+            import traceback
+            traceback.print_exc()
+            self.json(500,{'error':'Unexpected server error. Check server logs.'})
         except LookupError as e:self.json(404,{'error':str(e)})
         except sqlite3.IntegrityError:self.json(409,{'error':'A duplicate or invalid record was submitted'})
         except panta.PantaError as e:self.json(503,{'error':str(e),'source':'unavailable'})
@@ -150,7 +175,7 @@ class Handler(BaseHTTPRequestHandler):
         mime='text/html; charset=utf-8' if filename.endswith('.html') else ('text/javascript; charset=utf-8' if filename.endswith('.js') else ('text/css; charset=utf-8' if filename.endswith('.css') else 'image/svg+xml'))
         self.blob(200,(WEB/filename).read_bytes(),mime)
     def api(self,c,method,path,qs):
-        if method=='GET' and path=='/api/health':return 200,{'status':'ok','version':'1.3.0','panta_configured':panta.enabled()},None
+        if method=='GET' and path=='/api/health':return 200,{'status':'ok','version':'1.5.0','panta_configured':panta.enabled()},None
         # Public showcase view: only an opt-in, expiring aggregate report.
         public_match = re.fullmatch(r'/api/public/([A-Za-z0-9_-]{35,100})', path)
         if method=='GET' and public_match:
@@ -243,8 +268,11 @@ class Handler(BaseHTTPRequestHandler):
                 acts=c.execute('SELECT a.event,a.detail,a.created_at,u.display_name AS author FROM audit a JOIN users u ON u.id=a.user_id WHERE workspace_id=? ORDER BY a.id DESC LIMIT 80',(ws,)).fetchall()
                 return 200,{'activity':[dict(x) for x in acts]},None
             if method=='GET' and action=='alerts':
-                try:threshold=max(0.01,min(1,float(qs.get('threshold','.15'))))
-                except ValueError:raise RequestError(400,'Invalid threshold')
+                try:
+                    threshold=float(qs.get('threshold','.15'))
+                    if not math.isfinite(threshold): raise ValueError
+                    threshold=max(0.01,min(1,threshold))
+                except (ValueError,TypeError):raise RequestError(400,'Invalid threshold')
                 return 200,{'alerts':s.alert_summary(c,ws,user,threshold),'threshold':threshold},None
             if method=='GET' and action=='export':
                 data=s.overview(c,ws,user)
@@ -254,11 +282,11 @@ class Handler(BaseHTTPRequestHandler):
             if method=='GET' and action=='csv':
                 dec=s.overview(c,ws,user)['decisions']
                 f=io.StringIO();writer=csv.writer(f);writer.writerow(['id','title','question','status','outcome','team_probability','forecast_count','link_count','impact_usd','created_at'])
-                for d in dec:writer.writerow([d.get(x) for x in ('id','title','question','status','outcome','team_probability','forecast_count','link_count','impact_usd','created_at')])
+                for d in dec:writer.writerow([safe_csv_cell(d.get(x)) for x in ('id','title','question','status','outcome','team_probability','forecast_count','link_count','impact_usd','created_at')])
                 return 200,f.getvalue().encode('utf-8-sig'),'text/csv; charset=utf-8',{'Content-Disposition':'attachment; filename="outcomeos-decisions.csv"'}
             if method=='POST' and action=='decisions':
                 d=self.parse();deadline=field(d,'deadline',30,False) or None
-                if deadline and not re.fullmatch(r'\d{4}-\d{2}-\d{2}',deadline):raise RequestError(400,'Use YYYY-MM-DD for deadline')
+                deadline=valid_deadline(deadline)
                 did=s.create_decision(c,ws,user,field(d,'title',120),field(d,'question',350),field(d,'description',2500,False),field(d,'category',50,False) or 'Strategy',deadline,amount(d.get('impact_usd',0)))
                 return 201,{'id':did,'workspace_id':ws,'status':'open'},None
         # Owner-only share issuance/revocation. Share token displayed once and stored hashed.
@@ -296,7 +324,7 @@ class Handler(BaseHTTPRequestHandler):
                 if 'impact_usd' in inp:vals['impact_usd']=amount(inp['impact_usd'])
                 if 'deadline' in inp:
                     dl=field(inp,'deadline',30,False)
-                    if dl and not re.fullmatch(r'\d{4}-\d{2}-\d{2}',dl):raise RequestError(400,'Use YYYY-MM-DD for deadline')
+                    dl=valid_deadline(dl)
                     vals['deadline']=dl or None
                 if not vals:raise RequestError(400,'Nothing to update')
                 vals['updated_at']=s.utc()
