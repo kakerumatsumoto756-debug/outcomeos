@@ -362,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                 if d['status']!='open':raise RequestError(409,'Decision must be open')
                 inp=self.parse();mid=field(inp,'market_id',100);src=field(inp,'source',10);why=field(inp,'match_explanation',1000)
                 if src=='live':
-                    market=panta.detail(mid)
+                    market=panta.fresh_market(mid)
                     if market['marketId']!=mid:raise RequestError(409,'Market ID mismatch')
                 elif src=='demo':
                     market=next((m for m in demo_markets()['items'] if m['marketId']==mid),None)
@@ -387,7 +387,7 @@ class Handler(BaseHTTPRequestHandler):
                 return 200,{'ok':True},None
             if method=='POST' and action=='refresh':
                 if link['source']!='live':raise RequestError(400,'Demo quotes cannot be refreshed as live data')
-                market=panta.detail(link['market_id'])
+                market=panta.fresh_market(link['market_id'])
                 result=s.record_live_snapshot(c,lid,market)
                 s.audit(c,link['workspace_id'],user,'quote_refreshed',link['market_title']+' ('+result+')')
                 return 200,{'market':market,'snapshot_result':result},None
@@ -397,7 +397,7 @@ class Handler(BaseHTTPRequestHandler):
             cat=qs.get('category','')[:70];phase=qs.get('phase','')[:25];cursor=qs.get('cursor','')[:160]
             return 200,panta.catalog(cat,phase,cursor),None
         match=re.fullmatch(r'/api/markets/([1-9A-HJ-NP-Za-km-z]{25,60})',path)
-        if method=='GET' and match:return 200,panta.detail(match.group(1)),None
+        if method=='GET' and match:return 200,panta.fresh_market(match.group(1)),None
         raise RequestError(404,'Unknown endpoint')
 
 def create_server(host=None,port=None):

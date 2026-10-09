@@ -25,7 +25,7 @@ def sync_once(max_links=100, pause=1.0):
     counters = {'updated': 0, 'unchanged': 0, 'unpriced': 0, 'failed': 0}
     for index, link in enumerate(links):
         try:
-            market = panta.detail(link['market_id'])  # validates returned ID
+            market = panta.fresh_market(link['market_id'])  # validates returned ID
             with s.database() as conn:
                 found = conn.execute('''SELECT 1 FROM market_links l JOIN decisions d ON d.id=l.decision_id
                     WHERE l.id=? AND l.market_id=? AND l.source='live' AND d.status='open' ''',

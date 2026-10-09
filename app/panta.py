@@ -163,3 +163,51 @@ def detail(market_id: str, fetch=None) -> dict:
     if market['marketId'] != market_id:
         raise PantaError('Panta market ID does not match the requested ID.', 'invalid_response')
     return market
+
+
+def fresh_market(market_id: str, fetch=None, *, max_catalog_pages: int = 1) -> dict:
+    """Read a fresh Panta quote without guessing missing prices.
+
+    Panta's market detail and paginated market catalog can expose different
+    fields. A detail response without a usable YES quote is not evidence that
+    a quote is unavailable on the *same* market in the catalog. Read the
+    catalog again (never a client-supplied or stored quote) and accept a quote
+    only for the exact requested market ID. No YES=1-NO inference is made:
+    in a secondary/order-book market these prices need not sum to one.
+
+    The production default makes at most one extra catalog request so that a
+    Vercel function with a 30-second maximum stays within its timeout budget.
+    Page traversal remains bounded for explicit offline use.
+    """
+    detailed = detail(market_id, fetch=fetch)
+    if detailed['yesPrice'] is not None:
+        return {**detailed, 'quoteOrigin': 'market_detail'}
+
+    seen = set()
+    cursor = ''
+    for _ in range(max(0, min(int(max_catalog_pages), 5))):
+        if cursor in seen:
+            break
+        seen.add(cursor)
+        page = catalog(cursor=cursor, limit=50, fetch=fetch)
+        for item in page['items']:
+            if item['marketId'] == market_id:
+                if item['yesPrice'] is None:
+                    return {**detailed, 'quoteOrigin': 'unavailable'}
+                # Quote and its phase must come from the same upstream record.
+                # Prefer detail metadata if the catalog omits a human title.
+                return {
+                    **detailed,
+                    'yesPrice': item['yesPrice'],
+                    'noPrice': item['noPrice'],
+                    'phase': item['phase'],
+                    'quoteAvailable': True,
+                    'quoteOrigin': 'market_catalog',
+                    'title': detailed['title'] if detailed['titleAvailable'] else item['title'],
+                    'titleAvailable': detailed['titleAvailable'] or item['titleAvailable'],
+                }
+        following = page.get('nextCursor')
+        if not following or following in seen:
+            break
+        cursor = following
+    return {**detailed, 'quoteOrigin': 'unavailable'}
