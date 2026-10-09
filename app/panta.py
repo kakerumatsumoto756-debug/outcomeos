@@ -166,36 +166,42 @@ def detail(market_id: str, fetch=None) -> dict:
 
 
 def fresh_market(market_id: str, fetch=None, *, max_catalog_pages: int = 1) -> dict:
-    """Read a fresh Panta quote without guessing missing prices.
+    """Obtain an independently verified quote for exactly one Panta market.
 
-    Panta's market detail and paginated market catalog can expose different
-    fields. A detail response without a usable YES quote is not evidence that
-    a quote is unavailable on the *same* market in the catalog. Read the
-    catalog again (never a client-supplied or stored quote) and accept a quote
-    only for the exact requested market ID. No YES=1-NO inference is made:
-    in a secondary/order-book market these prices need not sum to one.
+    Detail endpoints sometimes omit quote fields present in catalog results.
+    When looking for the same ID in a catalog, preserve the market category
+    supplied by Panta detail. Searching the first unfiltered 50 markets can
+    miss a sports market even when the sports catalog contains its quote.
 
-    The production default makes at most one extra catalog request so that a
-    Vercel function with a 30-second maximum stays within its timeout budget.
-    Page traversal remains bounded for explicit offline use.
+    Keep calls bounded (1 detail + 1 catalog in production) for Vercel.
+    No client-supplied numbers, synthetic defaults, or YES=1-NO inference.
+    Diagnostics contain only public category/count/availability metadata.
     """
     detailed = detail(market_id, fetch=fetch)
     if detailed['yesPrice'] is not None:
-        return {**detailed, 'quoteOrigin': 'market_detail'}
+        return {**detailed, 'quoteOrigin': 'market_detail',
+                'quoteDiagnostics': {'detailYesAvailable': True, 'catalogFilter': None,
+                    'catalogPagesScanned': 0, 'marketFound': True, 'reason': 'priced_detail'}}
 
+    category = detailed.get('category')
+    if not isinstance(category, str) or not re.fullmatch(r'[a-z0-9_-]{1,40}', category) or category in ('unknown', 'other'):
+        category = ''
     seen = set()
     cursor = ''
+    scanned = 0
     for _ in range(max(0, min(int(max_catalog_pages), 5))):
         if cursor in seen:
             break
         seen.add(cursor)
-        page = catalog(cursor=cursor, limit=50, fetch=fetch)
+        page = catalog(category=category, cursor=cursor, limit=50, fetch=fetch)
+        scanned += 1
         for item in page['items']:
             if item['marketId'] == market_id:
+                diagnostic = {'detailYesAvailable': False, 'catalogFilter': category or None,
+                    'catalogPagesScanned': scanned, 'marketFound': True,
+                    'reason': 'priced_catalog' if item['yesPrice'] is not None else 'matched_market_unpriced'}
                 if item['yesPrice'] is None:
-                    return {**detailed, 'quoteOrigin': 'unavailable'}
-                # Quote and its phase must come from the same upstream record.
-                # Prefer detail metadata if the catalog omits a human title.
+                    return {**detailed, 'quoteOrigin': 'unavailable', 'quoteDiagnostics': diagnostic}
                 return {
                     **detailed,
                     'yesPrice': item['yesPrice'],
@@ -203,6 +209,7 @@ def fresh_market(market_id: str, fetch=None, *, max_catalog_pages: int = 1) -> d
                     'phase': item['phase'],
                     'quoteAvailable': True,
                     'quoteOrigin': 'market_catalog',
+                    'quoteDiagnostics': diagnostic,
                     'title': detailed['title'] if detailed['titleAvailable'] else item['title'],
                     'titleAvailable': detailed['titleAvailable'] or item['titleAvailable'],
                 }
@@ -210,4 +217,7 @@ def fresh_market(market_id: str, fetch=None, *, max_catalog_pages: int = 1) -> d
         if not following or following in seen:
             break
         cursor = following
-    return {**detailed, 'quoteOrigin': 'unavailable'}
+    return {**detailed, 'quoteOrigin': 'unavailable',
+            'quoteDiagnostics': {'detailYesAvailable': False, 'catalogFilter': category or None,
+                'catalogPagesScanned': scanned, 'marketFound': False,
+                'reason': 'catalog_page_missing_market' if scanned else 'catalog_not_checked'}}

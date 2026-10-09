@@ -51,7 +51,7 @@ class QuoteSourceTests(unittest.TestCase):
         self.assertEqual(result['yesPrice'], 0.50)
         self.assertEqual(result['noPrice'], 0.50)
         self.assertEqual(result['quoteOrigin'], 'market_catalog')
-        catalog.assert_called_once_with(cursor='', limit=50, fetch=None)
+        catalog.assert_called_once_with(category='sports', cursor='', limit=50, fetch=None)
 
     def test_wrong_market_price_never_used(self):
         with patch.object(panta, 'detail', return_value=detail_unpriced()), \
@@ -61,6 +61,7 @@ class QuoteSourceTests(unittest.TestCase):
             result = panta.fresh_market(MID)
         self.assertIsNone(result['yesPrice'])
         self.assertEqual(result['quoteOrigin'], 'unavailable')
+        self.assertEqual(result['quoteDiagnostics']['reason'], 'catalog_page_missing_market')
 
     def test_paginated_result_and_bounded_repeated_cursor(self):
         pages = [
@@ -76,6 +77,31 @@ class QuoteSourceTests(unittest.TestCase):
              patch.object(panta, 'catalog', return_value={'items':[], 'nextCursor':'repeat'}) as catalog:
             panta.fresh_market(MID, max_catalog_pages=5)
         self.assertEqual(catalog.call_count, 2)
+
+    def test_sports_quote_found_only_in_filtered_catalog(self):
+        # Reproduces the reported failure of the v1.5.1 unfiltered first page:
+        # the market appears in a sports catalog but not in the global top 50.
+        def catalog_only_sports(*, category='', cursor='', limit=50, fetch=None):
+            return {'items': [listing('0.50', '0.50')] if category == 'sports' else
+                    [listing('0.90', '0.10', OTHER)], 'nextCursor': None}
+        with patch.object(panta, 'detail', return_value=detail_unpriced()), \
+             patch.object(panta, 'catalog', side_effect=catalog_only_sports) as api:
+            result = panta.fresh_market(MID)
+        self.assertEqual(result['yesPrice'], 0.5)
+        self.assertEqual(result['quoteOrigin'], 'market_catalog')
+        self.assertEqual(result['quoteDiagnostics']['catalogFilter'], 'sports')
+        self.assertEqual(result['quoteDiagnostics']['reason'], 'priced_catalog')
+        self.assertEqual(api.call_count, 1)
+
+    def test_unpriced_market_exposes_safe_diagnostics(self):
+        with patch.object(panta, 'detail', return_value=detail_unpriced()), \
+             patch.object(panta, 'catalog', return_value={
+                 'items': [listing(None, None)], 'nextCursor': None,
+             }):
+            result = panta.fresh_market(MID)
+        self.assertIsNone(result['yesPrice'])
+        self.assertEqual(result['quoteDiagnostics']['reason'], 'matched_market_unpriced')
+        self.assertEqual(result['quoteDiagnostics']['marketFound'], True)
 
     def test_no_yes_in_catalog_not_inferred_from_no(self):
         with patch.object(panta, 'detail', return_value=detail_unpriced()), \
@@ -162,6 +188,7 @@ class QuoteRefreshEndToEndTests(unittest.TestCase):
             self.assertEqual(code,200,result)
             self.assertEqual(result['snapshot_result'],'unchanged')
             self.assertEqual(result['market']['quoteOrigin'],'market_catalog')
+            self.assertEqual(result['market']['quoteDiagnostics']['catalogFilter'],'sports')
             odds['yes']='0.55'
             code,_,result=self.call(f'/api/links/{lid}/refresh','POST',{})
             self.assertEqual(code,200,result)
